@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-neovim:
+    name: Neovim 0.13 pinned baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out diffbuf.nvim
+        uses: actions/checkout@v6
+
+      - name: Check out pinned Neovim
+        uses: actions/checkout@v6
+        with:
+          repository: neovim/neovim
+          ref: e02755cd9ff29277d14421c9df627e5dc48e4f67
+          path: .deps/neovim
+
+      - name: Install Neovim build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake gettext ninja-build curl unzip
+
+      - name: Build pinned Neovim
+        run: make -C .deps/neovim CMAKE_BUILD_TYPE=Release CMAKE_INSTALL_PREFIX="$RUNNER_TEMP/nvim" install
+
+      - name: Test
+        run: make test NVIM="$RUNNER_TEMP/nvim/bin/nvim"
+
+  neovim-head:
+    name: Current Neovim 0.13 HEAD drift check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out diffbuf.nvim
+        uses: actions/checkout@v6
+
+      - name: Install Neovim nightly
+        uses: rhysd/action-setup-vim@v1
+        with:
+          version: nightly
+
+      - name: Test
+        run: make test

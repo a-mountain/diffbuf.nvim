@@ -1,0 +1,7 @@
+diffbuf	diffbuf.txt	/*diffbuf*
+diffbuf-commands	diffbuf.txt	/*diffbuf-commands*
+diffbuf-config	diffbuf.txt	/*diffbuf-config*
+diffbuf-contents	diffbuf.txt	/*diffbuf-contents*
+diffbuf-limitations	diffbuf.txt	/*diffbuf-limitations*
+diffbuf-mappings	diffbuf.txt	/*diffbuf-mappings*
+diffbuf.txt	diffbuf.txt	/*diffbuf.txt*

@@ -1,0 +1,79 @@
+*diffbuf.txt*                 Read-only multi-file diffs in one Neovim buffer
+
+==============================================================================
+CONTENTS                                                        *diffbuf-contents*
+
+1. Introduction ............................................... |diffbuf|
+2. Commands ............................................ |diffbuf-commands|
+3. Mappings ............................................ |diffbuf-mappings|
+4. Configuration .......................................... |diffbuf-config|
+5. Limitations ...................................... |diffbuf-limitations|
+
+==============================================================================
+INTRODUCTION                                                    *diffbuf*
+
+diffbuf.nvim renders the working tree against the repository's default branch
+in one read-only buffer. The comparison includes committed branch changes plus
+staged and unstaged tracked-file changes. Untracked files are not included.
+
+The default branch comes from refs/remotes/origin/HEAD, with main and master
+fallbacks. Pass an explicit revision when a repository has no discoverable
+default branch.
+
+Requirements: Neovim 0.13+ and Git.
+
+==============================================================================
+COMMANDS                                                 *diffbuf-commands*
+
+:DiffBufOpen [revision]
+    Open the current working-tree diff. With no revision, compare against the
+    repository's default branch.
+
+:DiffBufRefresh
+    Regenerate the current diff buffer.
+
+==============================================================================
+MAPPINGS                                                 *diffbuf-mappings*
+
+The following mappings exist only in a diffbuf.nvim buffer:
+
+    gd      Request textDocument/definition for the mapped source location.
+    <CR>    Open the mapped working-tree source line.
+    ]f/[f   Move to the next/previous changed file.
+    ]c/[c   Move to the next/previous hunk.
+    r       Refresh the diff.
+    q       Delete the diff buffer.
+    ?       Open this help.
+
+For |gd|, diffbuf.nvim lazily loads the real source buffer and waits briefly
+for its normal LSP client to attach. Added and context lines map to the
+working-tree file. Deleted lines have no working-tree LSP location.
+
+==============================================================================
+CONFIGURATION                                                *diffbuf-config*
+
+Setup is optional. Defaults:
+
+>lua
+    require("diffbuf").setup({
+      context = 3,
+      lsp_attach_timeout_ms = 3000,
+    })
+<
+context ~
+    Non-negative number of unchanged lines around each hunk.
+
+lsp_attach_timeout_ms ~
+    Time to wait for the source buffer's definition provider to attach.
+
+==============================================================================
+LIMITATIONS                                            *diffbuf-limitations*
+
+- The initial version highlights diff structure but does not yet project
+  per-language Tree-sitter captures into the composite buffer.
+- Deleted lines cannot issue working-tree LSP requests.
+- Untracked files are not part of Git's ordinary diff and are not shown.
+- A source buffer's first LSP request can wait for its configured server to
+  attach. diffbuf.nvim does not configure or start language servers itself.
+
+vim:tw=78:ts=8:noet:ft=help:norl:
