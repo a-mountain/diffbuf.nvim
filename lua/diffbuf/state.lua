@@ -32,4 +32,17 @@ function M.get(buf)
   return states[buf]
 end
 
+---Every live composite buffer, so a base change can refresh all of them.
+---@return integer[]
+function M.list()
+  local buffers = {}
+  for buf in pairs(states) do
+    if vim.api.nvim_buf_is_valid(buf) then
+      buffers[#buffers + 1] = buf
+    end
+  end
+  table.sort(buffers)
+  return buffers
+end
+
 return M

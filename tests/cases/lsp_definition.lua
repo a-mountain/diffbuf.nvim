@@ -25,6 +25,7 @@ vim.api.nvim_create_autocmd("FileType", {
 
 local ok, error_message = xpcall(function()
   vim.cmd.cd(fixture.root)
+  vim.o.number = true
   vim.wo.statuscolumn = "SRC "
   vim.cmd("DiffBufOpen")
   helpers.wait_ready()
@@ -68,6 +69,10 @@ local ok, error_message = xpcall(function()
   end
   assert(vim.api.nvim_win_get_cursor(0)[1] == 1)
   assert(vim.wo.statuscolumn == "SRC ")
+  assert(vim.wo.number == true)
+  assert(vim.api.nvim_buf_is_valid(composite))
+  assert(vim.bo[composite].buflisted == true)
+  assert(vim.bo[composite].filetype == "diffbuf")
 
   assert(
     vim.wait(1000, function()

@@ -34,7 +34,9 @@ function M.navigate(buf, kind, direction)
 
   local index = row + direction
   while index >= 1 and index <= #state.rows do
-    if state.rows[index].kind == kind then
+    local item = state.rows[index]
+    local matches = item.kind == kind or (kind == "hunk" and item.hunk == true)
+    if matches then
       vim.api.nvim_win_set_cursor(0, { index, 0 })
       vim.cmd("normal! zz")
       return

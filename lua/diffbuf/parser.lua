@@ -27,6 +27,7 @@ function M.parse(text)
   local files = {}
   local file
   local hunk
+  local hunk_start = false
   local old_line
   local new_line
 
@@ -35,6 +36,7 @@ function M.parse(text)
       file = { rows = {}, old_path = nil, new_path = nil }
       files[#files + 1] = file
       hunk = nil
+      hunk_start = false
     elseif file ~= nil and line:match("^%-%-%- ") then
       file.old_path = display_path(line:sub(5):match("^[^\t]+"))
     elseif file ~= nil and line:match("^%+%+%+ ") then
@@ -45,14 +47,12 @@ function M.parse(text)
         hunk = parsed_hunk
         old_line = hunk.old_start
         new_line = hunk.new_start
-        file.rows[#file.rows + 1] = {
-          kind = "hunk",
-          text = line,
-        }
+        hunk_start = true
       elseif hunk ~= nil then
         local prefix = line:sub(1, 1)
+        local row
         if prefix == " " then
-          file.rows[#file.rows + 1] = {
+          row = {
             kind = "context",
             text = line:sub(2),
             old_line = old_line,
@@ -61,24 +61,31 @@ function M.parse(text)
           old_line = old_line + 1
           new_line = new_line + 1
         elseif prefix == "+" then
-          file.rows[#file.rows + 1] = {
+          row = {
             kind = "added",
             text = line:sub(2),
             new_line = new_line,
           }
           new_line = new_line + 1
         elseif prefix == "-" then
-          file.rows[#file.rows + 1] = {
+          row = {
             kind = "deleted",
             text = line:sub(2),
             old_line = old_line,
           }
           old_line = old_line + 1
         elseif prefix == "\\" then
-          file.rows[#file.rows + 1] = {
+          row = {
             kind = "meta",
             text = line,
           }
+        end
+        if row ~= nil then
+          if hunk_start then
+            row.hunk = true
+            hunk_start = false
+          end
+          file.rows[#file.rows + 1] = row
         end
       elseif line:match("^Binary files ") or line:match("^GIT binary patch") then
         file.rows[#file.rows + 1] = {

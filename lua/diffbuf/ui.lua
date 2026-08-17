@@ -3,6 +3,7 @@ local State = require("diffbuf.state")
 local M = {}
 local namespace = vim.api.nvim_create_namespace("diffbuf.nvim")
 local window_states = {}
+local apply_gens = {}
 local runtime_initialized = false
 
 local window_options = {
@@ -52,6 +53,107 @@ local function define_highlights()
   vim.api.nvim_set_hl(0, "DiffBufMeta", { default = true, link = "Comment" })
 end
 
+local function snapshot_window(win)
+  local previous = {}
+  for _, option in ipairs(window_options) do
+    previous[option] = vim.api.nvim_get_option_value(option, { win = win, scope = "local" })
+  end
+  return previous
+end
+
+local global_defaults
+
+local function remember_globals()
+  if global_defaults ~= nil then
+    return
+  end
+  global_defaults = {}
+  for _, option in ipairs(window_options) do
+    global_defaults[option] = vim.api.nvim_get_option_value(option, { scope = "global" })
+  end
+end
+
+local function unpoison_globals()
+  if global_defaults == nil then
+    return
+  end
+  local statuscolumn = vim.api.nvim_get_option_value("statuscolumn", { scope = "global" })
+  if type(statuscolumn) ~= "string" or not statuscolumn:find("diffbuf.ui", 1, true) then
+    return
+  end
+  for option, value in pairs(global_defaults) do
+    vim.api.nvim_set_option_value(option, value, { scope = "global" })
+  end
+end
+
+local function set_win_option(win, option, value)
+  vim.api.nvim_set_option_value(option, value, { win = win, scope = "local" })
+end
+
+local function set_window_options(win)
+  set_win_option(win, "statuscolumn", "%{v:lua.require'diffbuf.ui'.statuscolumn()}")
+  set_win_option(win, "number", false)
+  set_win_option(win, "relativenumber", false)
+  set_win_option(win, "signcolumn", "no")
+  set_win_option(win, "wrap", false)
+end
+
+local function restore_window(win, buf)
+  local owned = window_states[win]
+  if owned == nil or owned.buf ~= buf or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  apply_gens[win] = (apply_gens[win] or 0) + 1
+  for option, value in pairs(owned.previous) do
+    set_win_option(win, option, value)
+  end
+  unpoison_globals()
+  window_states[win] = nil
+end
+
+local function restore_buf_windows(buf)
+  local wins = {}
+  for win, owned in pairs(window_states) do
+    if owned.buf == buf then
+      wins[#wins + 1] = win
+    end
+  end
+  for _, win in ipairs(wins) do
+    restore_window(win, buf)
+  end
+end
+
+local function apply_window(buf, win)
+  if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
+    return
+  end
+
+  local existing = window_states[win]
+  if existing ~= nil and existing.buf ~= buf then
+    restore_window(win, existing.buf)
+    existing = nil
+  end
+
+  remember_globals()
+
+  if existing == nil then
+    window_states[win] = { buf = buf, previous = snapshot_window(win) }
+  end
+
+  set_window_options(win)
+end
+
+local function schedule_apply(buf, win)
+  local gen = (apply_gens[win] or 0) + 1
+  apply_gens[win] = gen
+  vim.schedule(function()
+    if apply_gens[win] ~= gen then
+      return
+    end
+    apply_window(buf, win)
+  end)
+end
+
 local function ensure_runtime()
   if runtime_initialized then
     return
@@ -63,7 +165,22 @@ local function ensure_runtime()
     group = group,
     desc = "Release diffbuf.nvim window state",
     callback = function(event)
-      window_states[tonumber(event.match)] = nil
+      local win = tonumber(event.match)
+      if win ~= nil then
+        apply_gens[win] = (apply_gens[win] or 0) + 1
+        window_states[win] = nil
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "WinEnter", "BufWinEnter", "BufEnter" }, {
+    group = group,
+    desc = "Restore diffbuf.nvim window options when another buffer is shown",
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      local owned = window_states[win]
+      if owned ~= nil and owned.buf ~= vim.api.nvim_win_get_buf(win) then
+        restore_window(win, owned.buf)
+      end
     end,
   })
   vim.api.nvim_create_autocmd("ColorScheme", {
@@ -73,50 +190,14 @@ local function ensure_runtime()
   })
 end
 
-local function restore_window(win, buf)
-  local owned = window_states[win]
-  if owned == nil or owned.buf ~= buf or not vim.api.nvim_win_is_valid(win) then
-    return
-  end
-  for option, value in pairs(owned.previous) do
-    vim.api.nvim_set_option_value(option, value, { win = win })
-  end
-  window_states[win] = nil
-end
-
-local function apply_window(buf, win)
-  local existing = window_states[win]
-  if existing ~= nil then
-    if existing.buf == buf then
-      return
-    end
-    restore_window(win, existing.buf)
-  end
-
-  local previous = {}
-  for _, option in ipairs(window_options) do
-    previous[option] = vim.api.nvim_get_option_value(option, { win = win })
-  end
-  window_states[win] = { buf = buf, previous = previous }
-
-  vim.api.nvim_set_option_value(
-    "statuscolumn",
-    "%{v:lua.require'diffbuf.ui'.statuscolumn()}",
-    { win = win }
-  )
-  vim.api.nvim_set_option_value("number", false, { win = win })
-  vim.api.nvim_set_option_value("relativenumber", false, { win = win })
-  vim.api.nvim_set_option_value("signcolumn", "no", { win = win })
-  vim.api.nvim_set_option_value("wrap", false, { win = win })
-end
-
 function M.create(root, base)
   ensure_runtime()
   define_highlights()
-  local buf = vim.api.nvim_create_buf(false, true)
+  local buf = vim.api.nvim_create_buf(true, true)
   vim.api.nvim_buf_set_name(buf, ("diffbuf://%s@%s#%d"):format(root, base, buf))
 
   vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
+  vim.api.nvim_set_option_value("buflisted", true, { buf = buf })
   vim.api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
   vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
   vim.api.nvim_set_option_value("undolevels", -1, { buf = buf })
@@ -127,22 +208,26 @@ function M.create(root, base)
   vim.api.nvim_set_option_value("filetype", "diffbuf", { buf = buf })
 
   local win = vim.api.nvim_get_current_win()
+  window_states[win] = { buf = buf, previous = snapshot_window(win) }
   vim.api.nvim_win_set_buf(win, buf)
-  vim.api.nvim_create_autocmd("BufWinEnter", {
+  vim.api.nvim_create_autocmd({ "BufWinEnter", "BufEnter" }, {
     buffer = buf,
     desc = "Apply diffbuf.nvim window options",
     callback = function()
-      apply_window(buf, vim.api.nvim_get_current_win())
+      local current_win = vim.api.nvim_get_current_win()
+      apply_window(buf, current_win)
+      schedule_apply(buf, current_win)
     end,
   })
-  vim.api.nvim_create_autocmd("BufWinLeave", {
+  vim.api.nvim_create_autocmd({ "BufWinLeave", "BufLeave" }, {
     buffer = buf,
     desc = "Restore options owned by diffbuf.nvim",
     callback = function()
-      restore_window(vim.api.nvim_get_current_win(), buf)
+      restore_buf_windows(buf)
     end,
   })
   apply_window(buf, win)
+  schedule_apply(buf, win)
 
   return buf
 end
@@ -169,12 +254,16 @@ function M.statuscolumn(row)
   if not vim.api.nvim_win_is_valid(win) then
     return ""
   end
-  local state = State.get(vim.api.nvim_win_get_buf(win))
-  local item = state and state.rows[row or vim.v.lnum]
-  if item == nil or (item.old_line == nil and item.new_line == nil) then
-    return "          │ "
+  local buf = vim.api.nvim_win_get_buf(win)
+  if vim.bo[buf].filetype ~= "diffbuf" then
+    return ""
   end
-  return ("%5s %5s │ "):format(item.old_line or "", item.new_line or "")
+  local state = State.get(buf)
+  local item = state and state.rows[row or vim.v.lnum]
+  if item == nil or item.new_line == nil then
+    return "      │ "
+  end
+  return ("%5s │ "):format(item.new_line)
 end
 
 function M.install_mappings(buf)
