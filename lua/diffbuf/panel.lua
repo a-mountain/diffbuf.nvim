@@ -14,6 +14,7 @@ local state = {
   layout = nil,
   collapsed = {},
   rows = {},
+  show_generated = nil,
 }
 local group
 
@@ -50,6 +51,7 @@ local function define_highlights()
     DiffBufPanelDeleted = "Removed",
     DiffBufPanelRenamed = "Special",
     DiffBufPanelUntracked = "Comment",
+    DiffBufPanelGenerated = "Comment",
     DiffBufPanelCount = "NonText",
   }
   for name, link in pairs(links) do
@@ -105,6 +107,33 @@ local function layout()
   return state.layout
 end
 
+local function show_generated()
+  if state.show_generated == nil then
+    state.show_generated = not Config.get().generated.hide_in_panel
+  end
+  return state.show_generated
+end
+
+---Split the changed files into what the panel lists and what it leaves out.
+---@param entries diffbuf.ChangedFile[]
+---@return diffbuf.ChangedFile[] visible
+---@return integer hidden
+local function visible_entries(entries)
+  if show_generated() then
+    return entries, 0
+  end
+
+  local visible, hidden = {}, 0
+  for _, entry in ipairs(entries) do
+    if entry.generated then
+      hidden = hidden + 1
+    else
+      visible[#visible + 1] = entry
+    end
+  end
+  return visible, hidden
+end
+
 -- Rendering ------------------------------------------------------------------
 
 local function counts_virt_text(row)
@@ -144,7 +173,9 @@ local function row_segments(row)
   segments[#segments + 1] = { icon ~= nil and (icon .. " ") or "  ", icon_highlight }
   segments[#segments + 1] = {
     row.label,
-    status_highlights[row.entry.status] or "DiffBufPanelModified",
+    row.entry.generated and "DiffBufPanelGenerated"
+      or status_highlights[row.entry.status]
+      or "DiffBufPanelModified",
   }
   if row.entry.old_path ~= nil then
     segments[#segments + 1] = { " ← " .. row.entry.old_path, "DiffBufPanelInfo" }
@@ -152,7 +183,7 @@ local function row_segments(row)
   return segments
 end
 
-local function header_lines(session, entries)
+local function header_lines(session, entries, hidden)
   local added, removed = 0, 0
   for _, entry in ipairs(entries) do
     added = added + (entry.added or 0)
@@ -170,6 +201,7 @@ local function header_lines(session, entries)
 
   local base = session ~= nil and Review.status() or ""
   local detail = session ~= nil and session.diverged and " (merge base)" or ""
+  local generated = hidden > 0 and ("  %d generated hidden"):format(hidden) or ""
 
   return {
     {
@@ -177,7 +209,11 @@ local function header_lines(session, entries)
       { base, "DiffBufPanelBase" },
       { detail, "DiffBufPanelCount" },
     },
-    { { summary, "DiffBufPanelInfo" }, { "  [" .. layout() .. "]", "DiffBufPanelCount" } },
+    {
+      { summary, "DiffBufPanelInfo" },
+      { generated, "DiffBufPanelGenerated" },
+      { "  [" .. layout() .. "]", "DiffBufPanelCount" },
+    },
     {},
   }
 end
@@ -207,7 +243,7 @@ local function render()
   end
 
   local session = Review.get()
-  local entries = (session ~= nil and session.files) or {}
+  local entries, hidden = visible_entries((session ~= nil and session.files) or {})
   state.rows = Tree.rows(entries, {
     layout = layout(),
     collapsed = state.collapsed,
@@ -215,18 +251,20 @@ local function render()
   })
 
   local lines, marks = {}, {}
-  for _, segments in ipairs(header_lines(session, entries)) do
+  for _, segments in ipairs(header_lines(session, entries, hidden)) do
     apply_segments(lines, marks, segments)
   end
 
   if #state.rows == 0 then
-    apply_segments(lines, marks, {
-      { "  " },
-      {
-        session == nil and "Start review mode with :DiffBufReview" or "No changes against the base",
-        "DiffBufPanelInfo",
-      },
-    })
+    local empty
+    if session == nil then
+      empty = "Start review mode with :DiffBufReview"
+    elseif hidden > 0 then
+      empty = "Only generated changes; show them with gh"
+    else
+      empty = "No changes against the base"
+    end
+    apply_segments(lines, marks, { { "  " }, { empty, "DiffBufPanelInfo" } })
   end
 
   for _, row in ipairs(state.rows) do
@@ -470,6 +508,22 @@ function M.expand_all()
   render()
 end
 
+---List or hide the files .gitattributes marks as generated.
+---@return boolean shown
+function M.toggle_generated()
+  state.show_generated = not show_generated()
+  local line = is_valid() and vim.api.nvim_win_get_cursor(state.win)[1] or nil
+  render()
+  if line ~= nil then
+    pcall(
+      vim.api.nvim_win_set_cursor,
+      state.win,
+      { math.min(line, vim.api.nvim_buf_line_count(state.buf)), 0 }
+    )
+  end
+  return state.show_generated
+end
+
 ---@param value? "tree"|"flat"
 function M.set_layout(value)
   if value ~= nil then
@@ -542,6 +596,9 @@ local function install_mappings(buf)
   map("t", function()
     M.set_layout()
   end, "Toggle the tree and flat layout")
+  map("gh", function()
+    M.toggle_generated()
+  end, "Show or hide generated files")
   map("r", function()
     M.refresh()
   end, "Reload the changed-file list")

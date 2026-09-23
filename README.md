@@ -4,7 +4,9 @@
 
 - **Inline diff** — every file of the repository diffed against the base through [mini.diff](https://github.com/nvim-mini/mini.diff); `:DiffBufOverlay` adds the overview, which shows removed lines inside the real file.
 - **Changed-files panel** — a sidebar of everything that differs from the base, in a tree or flat layout.
-- **Composite buffer** — every changed file in one read-only buffer.
+- **Composite buffer** — every changed file in one read-only buffer, highlighted per file (Tree-sitter, falling back to Vim syntax) and folded per file and per hunk.
+
+Generated files — the ones GitHub and GitLab collapse for you, marked `linguist-generated` or `gitlab-generated` in `.gitattributes` — sort to the end of the composite buffer and arrive collapsed there, and stay out of the panel until `gh` asks for them.
 
 ```text
 Review  origin/main…a1b2c3d (merge base)
@@ -67,6 +69,7 @@ With lazy.nvim:
 | `:DiffBufReviewRefresh` | Re-resolve the base and reload everything |
 | `:DiffBufPanel` | Toggle the changed-files panel |
 | `:DiffBufOverlay` | Toggle the inline overview |
+| `:DiffBufGenerated` | Show or hide generated changes here |
 | `:DiffBufOpen [rev]` | Open the composite diff buffer |
 
 `:DiffBufPanel` and `:DiffBufOverlay` start review mode themselves, so a single mapping is enough to enter review.
@@ -90,6 +93,7 @@ vim.keymap.set("n", "<leader>grd", "<cmd>DiffBufOpen<cr>", { desc = "Composite d
 | `h` | Collapse the directory, or move to the parent |
 | `H` / `L` | Collapse / expand every directory |
 | `t` | Toggle the tree and flat layout |
+| `gh` | Show or hide generated files |
 | `r` / `R` | Reload the file list / re-resolve the base |
 | `d` | Open the composite diff buffer |
 | `O` | Toggle the inline overview |
@@ -103,6 +107,9 @@ vim.keymap.set("n", "<leader>grd", "<cmd>DiffBufOpen<cr>", { desc = "Composite d
 | `<CR>` | Open the mapped source line |
 | `]f` / `[f` | Next / previous changed file |
 | `]c` / `[c` | Next / previous hunk |
+| `zc` / `zo` | Collapse / expand the hunk, then its file |
+| `zM` / `zR` | Collapse / expand everything |
+| `gh` | Collapse or expand every generated file |
 | `r` | Refresh |
 | `q` | Close |
 
@@ -114,6 +121,8 @@ Setup is optional; these are the defaults:
 require("diffbuf").setup({
   context = 3,
   lsp_attach_timeout_ms = 3000,
+  syntax = true,          -- highlight the composite buffer per file
+  filetypes = {},         -- vim.filetype.add() rules for paths Neovim cannot name
   review = {
     base = nil,          -- nil resolves the repository default branch
     merge_base = true,   -- GitHub-style three-dot comparison
@@ -121,6 +130,13 @@ require("diffbuf").setup({
     inline = true,       -- mini.diff inline diff on session start
     overlay = false,     -- start sessions with the overview visible
     panel = true,        -- open the panel on session start
+  },
+  generated = {
+    -- .gitattributes markers; {} turns the detection off
+    attributes = { "linguist-generated", "gitlab-generated" },
+    collapse = true,      -- generated files load folded in the composite buffer
+    sort_last = true,     -- behind every hand-written file
+    hide_in_panel = true, -- and stay out of the panel
   },
   panel = {
     position = "right",

@@ -1,3 +1,4 @@
+local Config = require("diffbuf.config")
 local State = require("diffbuf.state")
 
 local M = {}
@@ -12,6 +13,11 @@ local window_options = {
   "relativenumber",
   "signcolumn",
   "wrap",
+  "foldenable",
+  "foldexpr",
+  "foldlevel",
+  "foldmethod",
+  "foldtext",
 }
 
 local highlights = {
@@ -90,13 +96,194 @@ local function set_win_option(win, option, value)
   vim.api.nvim_set_option_value(option, value, { win = win, scope = "local" })
 end
 
+---Re-assigning a fold option rebuilds the folds and re-applies 'foldlevel',
+---which would reopen what the user or the generated-file collapsing closed. The
+---option applies run on every BufEnter, so only write a value that drifted.
+local function keep_win_option(win, option, value)
+  if vim.api.nvim_get_option_value(option, { win = win, scope = "local" }) ~= value then
+    set_win_option(win, option, value)
+  end
+end
+
 local function set_window_options(win)
   set_win_option(win, "statuscolumn", "%{v:lua.require'diffbuf.ui'.statuscolumn()}")
   set_win_option(win, "number", false)
   set_win_option(win, "relativenumber", false)
   set_win_option(win, "signcolumn", "no")
   set_win_option(win, "wrap", false)
+  keep_win_option(win, "foldmethod", "expr")
+  keep_win_option(win, "foldexpr", "v:lua.require'diffbuf.ui'.foldexpr()")
+  keep_win_option(win, "foldtext", "v:lua.require'diffbuf.ui'.foldtext()")
+  keep_win_option(win, "foldenable", true)
 end
+
+-- Folds ----------------------------------------------------------------------
+
+---Rows line up one-to-one with buffer lines, but only while a parsed diff is on
+---screen: the loading and error messages have no rows behind them.
+---@param buf integer
+---@return table[]?
+local function fold_rows(buf)
+  local state = State.get(buf)
+  if state == nil or state.status ~= "ready" then
+    return nil
+  end
+  if #state.rows ~= vim.api.nvim_buf_line_count(buf) then
+    return nil
+  end
+  return state.rows
+end
+
+---A file opens a level-1 fold and each of its hunks a level-2 fold inside it, so
+---`zc` collapses the hunk under the cursor and a second `zc` its whole file.
+---@return string
+function M.foldexpr()
+  local rows = fold_rows(vim.api.nvim_get_current_buf())
+  local row = rows ~= nil and rows[vim.v.lnum] or nil
+  if row == nil then
+    return "0"
+  end
+  if row.kind == "file" then
+    return ">1"
+  end
+  if row.hunk == true then
+    return ">2"
+  end
+  return "="
+end
+
+local function fold_counts(fold, lines)
+  local parts = { ("%d line%s"):format(lines, lines == 1 and "" or "s") }
+  if fold.added > 0 then
+    parts[#parts + 1] = "+" .. fold.added
+  end
+  if fold.removed > 0 then
+    parts[#parts + 1] = "-" .. fold.removed
+  end
+  return table.concat(parts, " ")
+end
+
+---@return string
+function M.foldtext()
+  local start = vim.v.foldstart
+  local lines = vim.v.foldend - start + 1
+  local rows = fold_rows(vim.api.nvim_get_current_buf())
+  local row = rows ~= nil and rows[start] or nil
+  local fold = row ~= nil and row.fold or nil
+  -- 'folddashes' carries one dash per level, and a hunk sits one level below its
+  -- file.
+  local indent = ("  "):rep(math.max(0, #(vim.v.folddashes or "-") - 1))
+
+  if fold == nil then
+    return ("%s%s  ⋯ %d lines"):format(indent, vim.fn.getline(start), lines)
+  end
+
+  local label
+  if fold.kind == "file" then
+    label = vim.fn.getline(start)
+    if fold.hunks > 0 then
+      label = ("%s  %d hunk%s"):format(label, fold.hunks, fold.hunks == 1 and "" or "s")
+    end
+    if row.generated then
+      label = label .. "  (generated)"
+    end
+  else
+    label = fold.header or "@@"
+  end
+
+  return ("%s%s  ⋯ %s"):format(indent, label, fold_counts(fold, lines))
+end
+
+---Lines starting the fold of a file .gitattributes marks as generated.
+---@param buf integer
+---@return integer[]
+local function generated_lines(buf)
+  local lines = {}
+  for index, row in ipairs(fold_rows(buf) or {}) do
+    if row.kind == "file" and row.generated then
+      lines[#lines + 1] = index
+    end
+  end
+  return lines
+end
+
+local function fold_command(win, command, lines)
+  vim.api.nvim_win_call(win, function()
+    for _, line in ipairs(lines) do
+      -- A file the diff shows without any hunk has no fold to act on.
+      pcall(vim.cmd, line .. command)
+    end
+  end)
+end
+
+local function fold_closed(win, line)
+  local ok, closed = pcall(function()
+    if win == vim.api.nvim_get_current_win() then
+      return vim.fn.foldclosed(line)
+    end
+    return vim.api.nvim_win_call(win, function()
+      return vim.fn.foldclosed(line)
+    end)
+  end)
+  return ok and closed == line
+end
+
+---Collapse generated files once per window and render, so the repeated option
+---applies behind a BufEnter cannot fight a manual expand. A window that leaves
+---the buffer and comes back starts from the collapsed state again.
+local function collapse_generated(buf, win)
+  local state = State.get(buf)
+  local owned = window_states[win]
+  local tick = state ~= nil and state.render_tick or 0
+  if owned == nil or owned.buf ~= buf or owned.generated_tick == tick then
+    return
+  end
+
+  owned.generated_tick = tick
+  if not Config.get().generated.collapse then
+    return
+  end
+  local lines = generated_lines(buf)
+  if #lines > 0 then
+    fold_command(win, "foldclose", lines)
+  end
+end
+
+---Write 'foldlevel' once, when the window takes the buffer over. It belongs to
+---the user from then on, so `zR` and `zM` outlive the option applies that follow
+---every BufEnter.
+local function init_folds(buf, win)
+  local owned = window_states[win]
+  if owned == nil or owned.buf ~= buf or owned.folds_initialized then
+    return
+  end
+  owned.folds_initialized = true
+  set_win_option(win, "foldlevel", 99)
+end
+
+---Collapse every generated file, or expand them all when any is collapsed.
+---@param buf integer
+---@return boolean? collapsed `nil` when the diff holds no generated file
+function M.toggle_generated_folds(buf)
+  local win = vim.fn.bufwinid(buf)
+  local lines = generated_lines(buf)
+  if win == -1 or #lines == 0 then
+    return nil
+  end
+
+  local collapsed = false
+  for _, line in ipairs(lines) do
+    if fold_closed(win, line) then
+      collapsed = true
+      break
+    end
+  end
+
+  fold_command(win, collapsed and "foldopen!" or "foldclose", lines)
+  return not collapsed
+end
+
+-- Window lifecycle -----------------------------------------------------------
 
 local function restore_window(win, buf)
   local owned = window_states[win]
@@ -141,6 +328,8 @@ local function apply_window(buf, win)
   end
 
   set_window_options(win)
+  init_folds(buf, win)
+  collapse_generated(buf, win)
 end
 
 local function schedule_apply(buf, win)
@@ -242,11 +431,21 @@ function M.render(buf, parsed, base)
   replace_lines(buf, lines)
   decorate(buf, rows)
   vim.api.nvim_set_option_value("modified", false, { buf = buf })
+
+  local state = State.get(buf)
+  if state ~= nil then
+    state.render_tick = (state.render_tick or 0) + 1
+  end
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    collapse_generated(buf, win)
+  end
+  require("diffbuf.syntax").render(buf)
 end
 
 function M.render_error(buf, message)
   replace_lines(buf, { "diffbuf.nvim: " .. message })
   decorate(buf, { { kind = "meta" } })
+  require("diffbuf.syntax").clear(buf)
 end
 
 function M.statuscolumn(row)
@@ -259,11 +458,16 @@ function M.statuscolumn(row)
     return ""
   end
   local state = State.get(buf)
-  local item = state and state.rows[row or vim.v.lnum]
-  if item == nil or item.new_line == nil then
-    return "      │ "
+  local lnum = row or vim.v.lnum
+  local item = state and state.rows[lnum]
+  local marker = "  "
+  if item ~= nil and item.fold ~= nil then
+    marker = fold_closed(win, lnum) and "▸ " or "▾ "
   end
-  return ("%5s │ "):format(item.new_line)
+  if item == nil or item.new_line == nil then
+    return marker .. "      │ "
+  end
+  return ("%s%5s │ "):format(marker, item.new_line)
 end
 
 function M.install_mappings(buf)
@@ -295,6 +499,10 @@ function M.install_mappings(buf)
   map("[c", function()
     require("diffbuf.actions").navigate(buf, "hunk", -1)
   end, "Previous diff hunk")
+
+  map("gh", function()
+    require("diffbuf").generated_toggle()
+  end, "Collapse or expand every generated file")
 
   map("r", function()
     require("diffbuf").refresh(buf)

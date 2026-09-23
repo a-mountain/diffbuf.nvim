@@ -252,6 +252,55 @@ function M.parse_numstat(text)
   return stats
 end
 
+---@param text string `git check-attr -z` output: path, attribute, value triples
+---@return table<string, boolean> paths carrying at least one of the attributes
+function M.parse_check_attr(text)
+  local fields = nul_fields(text)
+  local marked = {}
+
+  for index = 1, #fields - 2, 3 do
+    local path, value = fields[index], fields[index + 2]
+    -- `set` is a bare attribute, `true` an explicit `=true`; `unspecified`,
+    -- `unset` and `false` all mean the file is not marked.
+    if path ~= "" and (value == "set" or value == "true") then
+      marked[path] = true
+    end
+  end
+
+  return marked
+end
+
+---Ask Git which paths are generated. GitHub writes `linguist-generated` in
+---.gitattributes, GitLab writes `gitlab-generated`; both collapse those files
+---in code review, and so does diffbuf.nvim.
+---@param root string
+---@param paths string[] Paths relative to `root`.
+---@param attributes string[]
+---@param callback fun(generated: table<string, boolean>)
+function M.generated(root, paths, attributes, callback)
+  if #paths == 0 or #attributes == 0 then
+    vim.schedule(function()
+      callback({})
+    end)
+    return { kill = function() end }
+  end
+
+  local argv = vim.list_extend({ "git", "check-attr", "-z", "--stdin" }, attributes)
+  return vim.system(
+    argv,
+    {
+      cwd = root,
+      text = true,
+      stdin = table.concat(paths, "\0") .. "\0",
+    },
+    vim.schedule_wrap(function(result)
+      -- A failure here only costs the collapsing, so report nothing generated
+      -- rather than failing the surface that asked.
+      callback(result.code == 0 and M.parse_check_attr(result.stdout) or {})
+    end)
+  )
+end
+
 local function collect(root, jobs, callback)
   local results = {}
   local remaining = #jobs
@@ -285,11 +334,12 @@ end
 ---@field added integer
 ---@field removed integer
 ---@field binary boolean
+---@field generated boolean Marked generated in .gitattributes.
 
 ---List every file that differs between `rev` and the working tree.
 ---@param root string
 ---@param rev string
----@param opts { untracked: boolean }
+---@param opts { untracked: boolean, attributes?: string[] }
 ---@param callback fun(entries: diffbuf.ChangedFile[]?, error: string?)
 function M.changed_files(root, rev, opts, callback)
   local jobs = {
@@ -328,7 +378,14 @@ function M.changed_files(root, rev, opts, callback)
     }
   end
 
-  return collect(root, jobs, function(results)
+  local attribute_job
+  local killed = false
+
+  local status_job = collect(root, jobs, function(results)
+    if killed then
+      return
+    end
+
     local status_result = results[1]
     if status_result == nil or status_result.code ~= 0 then
       callback(nil, stderr_message(status_result or {}, "git diff --name-status failed"))
@@ -365,8 +422,33 @@ function M.changed_files(root, rev, opts, callback)
     table.sort(entries, function(one, two)
       return one.path < two.path
     end)
-    callback(entries)
+
+    local paths = {}
+    for index, entry in ipairs(entries) do
+      entry.generated = false
+      paths[index] = entry.path
+    end
+
+    attribute_job = M.generated(root, paths, opts.attributes or {}, function(generated)
+      if killed then
+        return
+      end
+      for _, entry in ipairs(entries) do
+        entry.generated = generated[entry.path] == true
+      end
+      callback(entries)
+    end)
   end)
+
+  return {
+    kill = function(_, signal)
+      killed = true
+      pcall(status_job.kill, status_job, signal)
+      if attribute_job ~= nil then
+        pcall(attribute_job.kill, attribute_job, signal)
+      end
+    end,
+  }
 end
 
 return M

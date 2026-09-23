@@ -70,6 +70,18 @@ end, {
   desc = "Toggle the changed-files panel",
 })
 
+vim.api.nvim_create_user_command("DiffBufGenerated", function()
+  local hidden = require("diffbuf").generated_toggle()
+  if hidden ~= nil then
+    vim.notify(
+      "diffbuf.nvim: generated changes " .. (hidden and "hidden" or "shown"),
+      vim.log.levels.INFO
+    )
+  end
+end, {
+  desc = "Show or hide generated changes in the panel or the composite buffer",
+})
+
 vim.api.nvim_create_user_command("DiffBufOverlay", function()
   -- Files with additions only look the same either way, so say what happened.
   local shown = require("diffbuf").overlay_toggle()

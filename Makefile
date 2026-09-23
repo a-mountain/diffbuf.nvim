@@ -4,7 +4,7 @@ DEPS_DIR := $(PLUGIN_ROOT)/.test-deps
 MINI_DIFF_DIR := $(DEPS_DIR)/mini.diff
 MINI_DIFF_URL ?= https://github.com/nvim-mini/mini.diff.git
 MINI_DIFF_REV ?= 626b8a5b93874c4d05ca25aedec56cfff0b378fb
-CASES := parser tree open lsp_definition review inline panel
+CASES := parser tree open folds syntax lsp_definition review inline panel generated
 
 .PHONY: test test-live deps helptags clean-deps
 

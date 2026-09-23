@@ -80,6 +80,22 @@ local panel_buf = vim.api.nvim_win_get_buf(assert(Panel.win()))
 local rendered = table.concat(vim.api.nvim_buf_get_lines(panel_buf, 0, -1, false), "\n")
 assert(rendered:find(session.ref, 1, true), "the panel header lacks the base revision")
 
+-- Generated files are detected from the repository's own .gitattributes and left
+-- out of the panel.
+local generated_files = 0
+for _, entry in ipairs(files) do
+  if entry.generated then
+    generated_files = generated_files + 1
+  end
+end
+for line = 1, vim.api.nvim_buf_line_count(panel_buf) do
+  local row = Panel.row_at(line)
+  assert(
+    row == nil or row.entry == nil or not row.entry.generated,
+    "the panel listed a generated file: " .. (row ~= nil and row.path or "")
+  )
+end
+
 -- The inline diff reads the base revision of a real file.
 local Inline = require("diffbuf.inline")
 assert(Inline.is_enabled(), "the inline diff did not turn on")
@@ -155,12 +171,27 @@ assert(
 )
 local composite_state = assert(require("diffbuf.state").get(composite))
 assert(composite_state.rev == session.commit)
-local composite_files = 0
-for _, row in ipairs(composite_state.rows) do
+local composite_files, composite_generated, composite_hunks = 0, 0, 0
+local composite_win = assert(vim.fn.bufwinid(composite))
+for line, row in ipairs(composite_state.rows) do
   if row.kind == "file" then
     composite_files = composite_files + 1
+    if row.generated then
+      composite_generated = composite_generated + 1
+      assert(vim.api.nvim_win_call(composite_win, function()
+        return vim.fn.foldclosed(line)
+      end) == line, "a generated file loaded expanded: " .. row.path)
+    end
+  elseif row.hunk then
+    composite_hunks = composite_hunks + 1
   end
 end
+print(
+  ("live: %d generated files hidden from the panel, %d collapsed in the composite buffer"):format(
+    generated_files,
+    composite_generated
+  )
+)
 
 Review.stop()
 assert(not Inline.is_enabled())
@@ -169,9 +200,10 @@ assert(not Panel.is_open())
 local after = status()
 assert(after == before, "the live repository changed while reviewing it")
 print(
-  ("ok: live (%d changed files, %d composite files, %d rows)"):format(
+  ("ok: live (%d changed files, %d composite files, %d hunks, %d rows)"):format(
     #files,
     composite_files,
+    composite_hunks,
     #composite_state.rows
   )
 )

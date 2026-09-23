@@ -146,6 +146,7 @@ function M.load_files(callback)
 
   files_job = Git.changed_files(session.root, session.commit, {
     untracked = Config.get().review.untracked,
+    attributes = Config.get().generated.attributes,
   }, function(entries, error_message)
     if token ~= files_token or session == nil or session.generation ~= generation then
       return

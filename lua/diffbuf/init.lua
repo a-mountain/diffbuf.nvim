@@ -11,6 +11,58 @@ local function notify_error(message)
   vim.notify("diffbuf.nvim: " .. message, vim.log.levels.ERROR)
 end
 
+---@param parsed table
+---@return string[]
+local function file_paths(parsed)
+  local paths = {}
+  for _, file in ipairs(parsed.files) do
+    paths[#paths + 1] = file.path
+  end
+  return paths
+end
+
+---Generated files last, everything else in the order Git reported it.
+---@param files table[]
+---@return table[]
+local function generated_last(files)
+  local ordered = {}
+  for _, file in ipairs(files) do
+    if not file.generated then
+      ordered[#ordered + 1] = file
+    end
+  end
+  for _, file in ipairs(files) do
+    if file.generated then
+      ordered[#ordered + 1] = file
+    end
+  end
+  return ordered
+end
+
+---Mark the generated files and lay the diff out again, which is what pushes their
+---rows down and gives every row the flag the folds read.
+---@param parsed table
+---@param generated table<string, boolean>
+---@return table
+local function apply_generated(parsed, generated)
+  local marked = false
+  for _, file in ipairs(parsed.files) do
+    if generated[file.path] == true then
+      file.generated = true
+      marked = true
+    end
+  end
+  if not marked then
+    return parsed
+  end
+
+  local files = parsed.files
+  if Config.get().generated.sort_last then
+    files = generated_last(files)
+  end
+  return Parser.assemble(files)
+end
+
 local function load(state)
   state.generation = state.generation + 1
   local generation = state.generation
@@ -21,15 +73,24 @@ local function load(state)
     pcall(state.job.kill, state.job, "sigterm")
   end
 
+  local function alive()
+    return State.get(state.buf) == state
+      and state.generation == generation
+      and vim.api.nvim_buf_is_valid(state.buf)
+  end
+
+  local function ready(parsed)
+    state.rows = parsed.rows
+    state.status = "ready"
+    vim.b[state.buf].diffbuf_status = "ready"
+    UI.render(state.buf, parsed, state.base)
+  end
+
   state.job = Git.diff(state.root, state.rev, Config.get().context, function(result)
-    local current = State.get(state.buf)
-    if current ~= state or state.generation ~= generation then
+    if not alive() then
       return
     end
     state.job = nil
-    if not vim.api.nvim_buf_is_valid(state.buf) then
-      return
-    end
 
     if result.code ~= 0 then
       state.status = "error"
@@ -44,10 +105,22 @@ local function load(state)
     end
 
     local parsed = Parser.parse(result.stdout or "")
-    state.rows = parsed.rows
-    state.status = "ready"
-    vim.b[state.buf].diffbuf_status = "ready"
-    UI.render(state.buf, parsed, state.base)
+    local attributes = Config.get().generated.attributes
+    local paths = #attributes > 0 and file_paths(parsed) or {}
+    if #paths == 0 then
+      ready(parsed)
+      return
+    end
+
+    -- Resolve the generated files before the first render, so they never flash
+    -- open at the top of the buffer.
+    state.job = Git.generated(state.root, paths, attributes, function(generated)
+      if not alive() then
+        return
+      end
+      state.job = nil
+      ready(apply_generated(parsed, generated))
+    end)
   end)
 end
 
@@ -157,6 +230,30 @@ function M.panel_toggle()
     return nil
   end
   return Panel.open({ focus = true })
+end
+
+---Show or hide the generated changes of the surface under the cursor: folds in a
+---composite buffer, list entries in the panel.
+---@return boolean? hidden `nil` when there is nothing to toggle
+function M.generated_toggle()
+  local buf = vim.api.nvim_get_current_buf()
+  if State.get(buf) ~= nil then
+    local collapsed = UI.toggle_generated_folds(buf)
+    if collapsed == nil then
+      vim.notify("diffbuf.nvim: this diff has no generated file", vim.log.levels.INFO)
+    end
+    return collapsed
+  end
+
+  local Panel = require("diffbuf.panel")
+  if not Panel.is_open() then
+    vim.notify(
+      "diffbuf.nvim: open the changed-files panel or a composite buffer first",
+      vim.log.levels.INFO
+    )
+    return nil
+  end
+  return not Panel.toggle_generated()
 end
 
 ---Toggle the inline diff overview, starting review mode when needed.

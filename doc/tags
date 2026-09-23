@@ -1,3 +1,4 @@
+:DiffBufGenerated	diffbuf.txt	/*:DiffBufGenerated*
 :DiffBufOpen	diffbuf.txt	/*:DiffBufOpen*
 :DiffBufOverlay	diffbuf.txt	/*:DiffBufOverlay*
 :DiffBufPanel	diffbuf.txt	/*:DiffBufPanel*
@@ -13,6 +14,7 @@ diffbuf-composite	diffbuf.txt	/*diffbuf-composite*
 diffbuf-config	diffbuf.txt	/*diffbuf-config*
 diffbuf-contents	diffbuf.txt	/*diffbuf-contents*
 diffbuf-events	diffbuf.txt	/*diffbuf-events*
+diffbuf-generated	diffbuf.txt	/*diffbuf-generated*
 diffbuf-highlights	diffbuf.txt	/*diffbuf-highlights*
 diffbuf-inline	diffbuf.txt	/*diffbuf-inline*
 diffbuf-limitations	diffbuf.txt	/*diffbuf-limitations*

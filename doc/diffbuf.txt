@@ -8,13 +8,14 @@ CONTENTS                                                    *diffbuf-contents*
 3. Inline diff ........................................... |diffbuf-inline|
 4. Changed-files panel .................................... |diffbuf-panel|
 5. Composite buffer ................................... |diffbuf-composite|
-6. Commands ............................................ |diffbuf-commands|
-7. Mappings ............................................ |diffbuf-mappings|
-8. Configuration .......................................... |diffbuf-config|
-9. Lua API ................................................... |diffbuf-api|
-10. Events ................................................ |diffbuf-events|
-11. Highlight groups .................................. |diffbuf-highlights|
-12. Limitations ..................................... |diffbuf-limitations|
+6. Generated files .................................... |diffbuf-generated|
+7. Commands ............................................ |diffbuf-commands|
+8. Mappings ............................................ |diffbuf-mappings|
+9. Configuration .......................................... |diffbuf-config|
+10. Lua API .................................................. |diffbuf-api|
+11. Events ................................................ |diffbuf-events|
+12. Highlight groups .................................. |diffbuf-highlights|
+13. Limitations ..................................... |diffbuf-limitations|
 
 ==============================================================================
 INTRODUCTION                                                        *diffbuf*
@@ -118,6 +119,13 @@ with its status letter and its added and removed line counts:
 directories that hold a single changed subdirectory, so a deep path costs one
 row instead of one row per component.
 
+Generated files are left out. The counts then describe what the panel lists, and
+the header says how many files it dropped:
+>text
+    2 files  +2  -1  2 generated hidden  [tree]
+<
+`gh` lists them again, dimmed. See |diffbuf-generated|.
+
 Opening a file uses the neighbouring editor window and moves the cursor to its
 first hunk. Deleted files have no working-tree copy, so they open a read-only
 buffer holding their content in the base revision.
@@ -127,10 +135,81 @@ See |diffbuf-mappings| for the full list of panel keys.
 ==============================================================================
 COMPOSITE BUFFER                                          *diffbuf-composite*
 
-|:DiffBufOpen| renders every changed file in one read-only buffer. Neovim line
-numbers are disabled there; the gutter shows a single working-tree line-number
-column. With review mode active the buffer uses the session base, so it agrees
-with the panel and the inline diff.
+|:DiffBufOpen| renders every changed file in one read-only buffer, hand-written
+files first and generated ones last (|diffbuf-generated|). Neovim line numbers are
+disabled there; the gutter shows a single working-tree line-number column. With
+review mode active the buffer uses the session base, so it agrees with the panel
+and the inline diff.
+
+Every file is coloured in the language its path implies, on top of the added and
+removed backgrounds. Tree-sitter does it where a parser and its highlights query
+are installed; everything else falls back to Vim's own syntax engine, which
+covers the configuration, shell and markup files a repository holds and a review
+still has to read. Only what a window can see is highlighted, so a diff of
+hundreds of files costs nothing until you scroll into it.
+
+Each file's body is parsed on its own and still holds the removed lines, so a
+construct that opens outside the shown context can be coloured wrongly;
+block-structured formats such as Markdown suffer from this most. `syntax = false`
+keeps the whole buffer plain.
+
+A diff meets file types an editing session never opens, and Neovim names the
+filetype from the path alone here, without the file's contents. Teach it the ones
+your repository uses with `filetypes`, which takes |vim.filetype.add()| form:
+>lua
+    require("diffbuf").setup({
+      filetypes = {
+        extension = { axl = "bzl" },
+        filename = { [".bazelrc"] = "conf" },
+        pattern = { [".*%.bazel%.lock"] = "json" },
+      },
+    })
+<
+The rules go to |vim.filetype.add()| itself, so they apply to the real files too,
+not only to their diffs.
+
+The buffer folds itself: each file is a fold and each of its hunks a fold
+inside it, so `zc` collapses the hunk under the cursor, a second `zc` its whole
+file, and |zM| and |zR| collapse and expand everything. The gutter marks a fold
+start with `▾` when it is open and `▸` when it is closed, and a closed fold
+reports its hunk header or file name with its line and change counts.
+
+The fold options are window-local and given back when the window shows another
+buffer, so a 'foldmethod' or 'foldexpr' of your own is untouched. 'foldlevel' is
+yours after the buffer is first shown; leaving and re-entering the buffer starts
+over from the fully expanded state, with generated files collapsed again.
+
+==============================================================================
+GENERATED FILES                                           *diffbuf-generated*
+
+Lock files, code generator output and snapshots make a diff long without making
+it interesting. Both forges mark them in `.gitattributes`, GitHub with
+`linguist-generated` and GitLab with `gitlab-generated`:
+>text
+    *.lock            gitlab-generated=true
+    gen/**/*.go       linguist-generated
+    src/hand.go       linguist-generated=false
+<
+diffbuf.nvim reads the same attributes with `git check-attr`, so the files that
+arrive collapsed in a merge request arrive collapsed here:
+
+    - the composite buffer moves them behind every hand-written file and loads
+      their folds closed, labelled `(generated)`,
+    - the panel leaves them out and counts them in its header, dropping the
+      directories that hold nothing else.
+
+Moving them last means the buffer opens on a change worth reading, and `]f` walks
+the real work before it reaches the generated tail. Within each group the order
+Git reported is kept, so `generated.sort_last` is the only thing that reorders a
+diff.
+
+|:DiffBufGenerated| reverses the decision for the surface under the cursor: it
+expands and collapses the generated folds inside a composite buffer, and shows
+and hides the generated entries in the panel. `gh` does the same in both.
+
+An explicit `=false` or `-linguist-generated` keeps a file out of the set, which
+is how a hand-written file inside a generated directory stays visible. Set
+`generated.attributes` to `{}` to stop asking Git altogether.
 
 ==============================================================================
 COMMANDS                                                   *diffbuf-commands*
@@ -156,6 +235,11 @@ COMMANDS                                                   *diffbuf-commands*
                                                                *:DiffBufPanel*
 :DiffBufPanel
     Toggle the changed-files panel, starting review mode when it is off.
+
+                                                           *:DiffBufGenerated*
+:DiffBufGenerated
+    Show or hide the generated changes of the surface under the cursor: folds in
+    a composite buffer, entries in the panel. See |diffbuf-generated|.
 
                                                              *:DiffBufOverlay*
 :DiffBufOverlay
@@ -183,9 +267,13 @@ Inside a composite buffer:
     <CR>    Open the mapped working-tree source line.
     ]f/[f   Move to the next/previous changed file.
     ]c/[c   Move to the next/previous hunk.
+    gh      Collapse or expand every generated file.
     r       Refresh the diff.
     q       Delete the diff buffer.
     ?       Open this help.
+
+Folds are Neovim's own, so |zc|, |zo|, |za|, |zM| and |zR| all apply; see
+|diffbuf-composite|.
 
 For |gd|, diffbuf.nvim lazily loads the real source buffer and waits briefly
 for its normal LSP client to attach. Added and context lines map to the
@@ -200,6 +288,7 @@ Inside the panel:
     H       Collapse every directory.
     L       Expand every directory.
     t       Toggle the tree and flat layout.
+    gh      Show or hide generated files.
     r       Reload the changed-file list.
     R       Re-resolve the base and reload every review surface.
     d       Open the composite diff buffer.
@@ -215,6 +304,8 @@ Setup is optional. Defaults:
     require("diffbuf").setup({
       context = 3,
       lsp_attach_timeout_ms = 3000,
+      syntax = true,
+      filetypes = {},
       review = {
         base = nil,
         merge_base = true,
@@ -222,6 +313,12 @@ Setup is optional. Defaults:
         inline = true,
         overlay = false,
         panel = true,
+      },
+      generated = {
+        attributes = { "linguist-generated", "gitlab-generated" },
+        collapse = true,
+        sort_last = true,
+        hide_in_panel = true,
       },
       panel = {
         position = "right",
@@ -239,6 +336,14 @@ context ~
 
 lsp_attach_timeout_ms ~
     Time to wait for a source buffer's definition provider to attach.
+
+syntax ~
+    Highlight the composite buffer per file, with Tree-sitter where a parser is
+    installed and Vim's syntax engine everywhere else. See |diffbuf-composite|.
+
+filetypes ~
+    Filetype rules for paths Neovim cannot name, in |vim.filetype.add()| form and
+    handed straight to it. Empty by default.
 
 review.base ~
     Default base revision. `nil` resolves the repository default branch.
@@ -259,6 +364,20 @@ review.overlay ~
 
 review.panel ~
     Open the changed-files panel when a session starts.
+
+generated.attributes ~
+    .gitattributes attributes that mark a file as generated. An empty list turns
+    the detection off, and no `git check-attr` runs. See |diffbuf-generated|.
+
+generated.collapse ~
+    Load generated files with their fold closed in the composite buffer.
+
+generated.sort_last ~
+    Lay generated files out after every other file in the composite buffer. When
+    false, the buffer keeps the order `git diff` produced.
+
+generated.hide_in_panel ~
+    Leave generated files out of the panel until `gh` asks for them.
 
 panel.position ~
     "right" or "left".
@@ -290,6 +409,7 @@ LUA API                                                         *diffbuf-api*
     diffbuf.review_refresh()
     diffbuf.panel_toggle()
     diffbuf.overlay_toggle()
+    diffbuf.generated_toggle()   -- true once generated changes are hidden
     diffbuf.open({ base = "HEAD" })           -- composite buffer
     diffbuf.refresh()
 
@@ -348,6 +468,8 @@ Panel:
     DiffBufPanelDeleted       Deleted files and counts. Links to Removed.
     DiffBufPanelRenamed       Renamed and copied files. Links to Special.
     DiffBufPanelUntracked     Untracked files. Links to Comment.
+    DiffBufPanelGenerated     Generated files and the hidden count. Links to
+                              Comment.
     DiffBufPanelCount         Secondary text. Links to NonText.
 
 The inline diff uses mini.diff's own groups; see |MiniDiff-hl-groups|.
@@ -355,8 +477,11 @@ The inline diff uses mini.diff's own groups; see |MiniDiff-hl-groups|.
 ==============================================================================
 LIMITATIONS                                            *diffbuf-limitations*
 
-- The composite buffer highlights diff structure but does not project
-  per-language Tree-sitter captures into itself.
+- The composite buffer highlights each file's diff body as a standalone fragment
+  that still contains the removed lines, so highlighting can be wrong where a
+  construct opens outside the context lines. A file Neovim cannot name a
+  filetype for stays plain until `filetypes` names it, and a file whose diff runs
+  past 5000 lines is left plain rather than parsed.
 - Deleted lines in the composite buffer cannot issue LSP requests.
 - The composite buffer shows tracked changes only, because untracked files are
   not part of an ordinary `git diff`. The panel and the inline diff do include
