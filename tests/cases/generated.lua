@@ -3,23 +3,7 @@ local helpers = dofile(vim.fs.joinpath(plugin_root, "tests", "helpers.lua"))
 local fixture = helpers.seed_generated_repo()
 
 local Git = require("diffbuf.git")
-local Panel = require("diffbuf.panel")
-local Review = require("diffbuf.review")
 local State = require("diffbuf.state")
-
-local function panel_lines()
-  local win = assert(Panel.win(), "the panel window is gone")
-  return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)
-end
-
-local function line_with(needle)
-  for index, line in ipairs(panel_lines()) do
-    if line:find(needle, 1, true) then
-      return index
-    end
-  end
-  return nil
-end
 
 local function press(keys)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "xt", false)
@@ -51,43 +35,8 @@ local ok, error_message = xpcall(function()
   )
 
   vim.cmd.cd(fixture.root)
-  local editor_win = vim.api.nvim_get_current_win()
-  require("diffbuf").setup({ review = { inline = false }, panel = { width = 40 } })
+  require("diffbuf").setup({})
 
-  vim.cmd("DiffBufReview")
-  local by_path = helpers.by_path(helpers.wait_files())
-  assert(by_path["deps.lock"].generated == true, "*.lock is gitlab-generated")
-  assert(by_path["gen/schema.txt"].generated == true, "gen/**/*.txt is linguist-generated")
-  assert(by_path["src/hand.txt"].generated == false)
-  assert(by_path["src/kept.txt"].generated == false, "linguist-generated=false is not generated")
-
-  -- The panel leaves generated files out and says how many it dropped.
-  helpers.wait_for("the panel never rendered the changed files", function()
-    return line_with("hand.txt") ~= nil
-  end)
-  assert(line_with("deps.lock") == nil, "generated files start hidden")
-  assert(line_with("schema.txt") == nil)
-  assert(
-    line_with("▾ gen") == nil,
-    "a directory holding only generated files disappears with them"
-  )
-  assert(panel_lines()[2]:find("2 files", 1, true), panel_lines()[2])
-  assert(panel_lines()[2]:find("2 generated hidden", 1, true), panel_lines()[2])
-
-  local panel_win = assert(Panel.win())
-  vim.api.nvim_set_current_win(panel_win)
-  vim.api.nvim_win_set_cursor(panel_win, { 4, 0 })
-  press("gh")
-  assert(line_with("deps.lock") ~= nil, table.concat(panel_lines(), "\n"))
-  assert(line_with("schema.txt") ~= nil)
-  assert(panel_lines()[2]:find("4 files", 1, true), panel_lines()[2])
-  assert(not panel_lines()[2]:find("generated hidden", 1, true), panel_lines()[2])
-  press("gh")
-  assert(line_with("deps.lock") == nil, "gh hides them again")
-  assert(panel_lines()[2]:find("2 generated hidden", 1, true))
-
-  -- The composite buffer loads with the generated files already collapsed.
-  vim.api.nvim_set_current_win(editor_win)
   vim.cmd("DiffBufOpen")
   helpers.wait_ready()
   local buf = vim.api.nvim_get_current_buf()
@@ -144,7 +93,7 @@ local ok, error_message = xpcall(function()
   end)
 
   -- generated.sort_last = false leaves the diff in Git's order.
-  require("diffbuf").setup({ review = { inline = false }, generated = { sort_last = false } })
+  require("diffbuf").setup({ generated = { sort_last = false } })
   vim.cmd("DiffBufRefresh")
   helpers.wait_ready()
   local git_order = {}
@@ -159,27 +108,13 @@ local ok, error_message = xpcall(function()
   )
   assert(State.get(buf).rows[1].generated == true, "they are still marked, just not moved")
 
-  -- An empty attribute list turns the detection off everywhere.
-  require("diffbuf").setup({ review = { inline = false }, generated = { attributes = {} } })
-  local reloaded = false
-  Review.load_files(function()
-    reloaded = true
-  end)
-  helpers.wait_for("the changed-file list did not reload", function()
-    return reloaded
-  end)
-  assert(helpers.by_path(Review.files())["deps.lock"].generated == false)
-  helpers.wait_for("the panel kept hiding files that are no longer generated", function()
-    return line_with("deps.lock") ~= nil
-  end)
-
+  -- An empty attribute list turns the detection off.
+  require("diffbuf").setup({ generated = { attributes = {} } })
   vim.cmd("DiffBufRefresh")
   helpers.wait_ready()
   for _, row in ipairs(State.get(buf).rows) do
     assert(row.generated == nil, "nothing is marked generated once detection is off")
   end
-
-  Review.stop()
 end, debug.traceback)
 
 helpers.cleanup(fixture)

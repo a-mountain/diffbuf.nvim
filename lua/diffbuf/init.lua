@@ -1,7 +1,6 @@
 local Config = require("diffbuf.config")
 local Git = require("diffbuf.git")
 local Parser = require("diffbuf.parser")
-local Review = require("diffbuf.review")
 local State = require("diffbuf.state")
 local UI = require("diffbuf.ui")
 
@@ -128,8 +127,7 @@ end
 ---@field cwd? string
 ---@field base? string
 
----Open the composite diff buffer. With review mode active and no explicit base,
----it compares against the session base.
+---Open the composite diff buffer against a base revision.
 ---@param opts? diffbuf.OpenOpts
 ---@return integer?
 function M.open(opts)
@@ -138,28 +136,17 @@ function M.open(opts)
   vim.validate("opts.cwd", opts.cwd, "string", true)
   vim.validate("opts.base", opts.base, "string", true)
 
-  local session = Review.get()
-  local cwd = opts.cwd
-  if cwd == nil then
-    cwd = (opts.base == nil and session ~= nil) and session.root or vim.uv.cwd()
-  end
-  local root, root_error = Git.root(cwd)
+  local root, root_error = Git.root(opts.cwd or vim.uv.cwd())
   if root == nil then
     notify_error(root_error)
     return nil
   end
 
-  local base
-  if opts.base == nil and session ~= nil and session.root == root then
-    base = { ref = session.ref, commit = session.commit }
-  else
-    local base_error
-    base, base_error =
-      Git.resolve_base(root, opts.base or Config.get().review.base, Config.get().review.merge_base)
-    if base == nil then
-      notify_error(base_error)
-      return nil
-    end
+  local config = Config.get()
+  local base, base_error = Git.resolve_base(root, opts.base or config.base, config.merge_base)
+  if base == nil then
+    notify_error(base_error)
+    return nil
   end
 
   local buf = UI.create(root, base.ref)
@@ -180,110 +167,22 @@ function M.refresh(buf)
     notify_error("the current buffer is not owned by diffbuf.nvim")
     return
   end
-
-  local session = Review.get()
-  if session ~= nil and session.root == state.root then
-    state.base = session.ref
-    state.rev = session.commit
-  end
   load(state)
 end
 
----Start review mode, or switch the active session to another base.
----@param opts? diffbuf.ReviewOpts
-function M.review(opts)
-  return Review.start(opts)
-end
-
----@param opts? diffbuf.ReviewOpts
-function M.review_toggle(opts)
-  return Review.toggle(opts)
-end
-
-function M.review_stop()
-  return Review.stop()
-end
-
-function M.review_refresh()
-  return Review.refresh()
-end
-
----@return diffbuf.Session?
-function M.session()
-  return Review.get()
-end
-
----Base description for statuslines. Empty when review mode is off.
----@return string
-function M.status()
-  return Review.status()
-end
-
----Toggle the changed-files panel, starting review mode when needed.
-function M.panel_toggle()
-  local Panel = require("diffbuf.panel")
-  if Panel.is_open() then
-    Panel.close()
-    return nil
-  end
-  if not Review.is_active() and Review.start({ panel = false }) == nil then
-    return nil
-  end
-  return Panel.open({ focus = true })
-end
-
----Show or hide the generated changes of the surface under the cursor: folds in a
----composite buffer, list entries in the panel.
+---Show or hide the generated folds of the composite buffer.
 ---@return boolean? hidden `nil` when there is nothing to toggle
 function M.generated_toggle()
   local buf = vim.api.nvim_get_current_buf()
-  if State.get(buf) ~= nil then
-    local collapsed = UI.toggle_generated_folds(buf)
-    if collapsed == nil then
-      vim.notify("diffbuf.nvim: this diff has no generated file", vim.log.levels.INFO)
-    end
-    return collapsed
-  end
-
-  local Panel = require("diffbuf.panel")
-  if not Panel.is_open() then
-    vim.notify(
-      "diffbuf.nvim: open the changed-files panel or a composite buffer first",
-      vim.log.levels.INFO
-    )
+  if State.get(buf) == nil then
+    vim.notify("diffbuf.nvim: open a composite buffer first", vim.log.levels.INFO)
     return nil
   end
-  return not Panel.toggle_generated()
-end
-
----Toggle the inline diff overview, starting review mode when needed.
----@return boolean?
-function M.overlay_toggle()
-  local Inline = require("diffbuf.inline")
-  local started = false
-  if not Review.is_active() then
-    if Review.start({ panel = false }) == nil then
-      return nil
-    end
-    started = true
+  local collapsed = UI.toggle_generated_folds(buf)
+  if collapsed == nil then
+    vim.notify("diffbuf.nvim: this diff has no generated file", vim.log.levels.INFO)
   end
-  if not Inline.is_enabled() and not Inline.enable() then
-    return nil
-  end
-  if started then
-    -- Starting review mode is what the user asked for; do not immediately undo
-    -- the overlay it just turned on.
-    Inline.set_overlay(true)
-    return true
-  end
-  return Inline.toggle_overlay()
-end
-
----mini.diff source reading reference text from the review base. Only needed to
----wire the source manually; review mode installs it on its own.
----@return table
-function M.minidiff_source()
-  return require("diffbuf.inline").source()
+  return collapsed
 end
 
 function M.setup(opts)
