@@ -1,178 +1,130 @@
-*diffbuf.txt*            Review a branch inside Neovim against one shared base
+*diffbuf.txt*              A branch diff in one focused Neovim buffer
 
 ==============================================================================
 CONTENTS                                                    *diffbuf-contents*
 
 1. Introduction ............................................... |diffbuf|
-2. Review mode ........................................... |diffbuf-review|
-3. Inline diff ........................................... |diffbuf-inline|
-4. Changed-files panel .................................... |diffbuf-panel|
-5. Composite buffer ................................... |diffbuf-composite|
-6. Commands ............................................ |diffbuf-commands|
-7. Mappings ............................................ |diffbuf-mappings|
-8. Configuration .......................................... |diffbuf-config|
-9. Lua API ................................................... |diffbuf-api|
-10. Events ................................................ |diffbuf-events|
-11. Highlight groups .................................. |diffbuf-highlights|
-12. Limitations ..................................... |diffbuf-limitations|
+2. Composite buffer ................................... |diffbuf-composite|
+3. Generated files .................................... |diffbuf-generated|
+4. Commands ............................................ |diffbuf-commands|
+5. Mappings ............................................ |diffbuf-mappings|
+6. Configuration .......................................... |diffbuf-config|
+7. Lua API .................................................. |diffbuf-api|
+8. Highlight groups .................................... |diffbuf-highlights|
+9. Limitations ....................................... |diffbuf-limitations|
 
 ==============================================================================
 INTRODUCTION                                                        *diffbuf*
 
-diffbuf.nvim reviews a branch from inside Neovim. One review session fixes the
-base revision, and every surface reads it:
+diffbuf.nvim shows a branch diff in one focused read-only buffer. The base
+revision is resolved into a concrete commit when the buffer opens, and that
+commit is what the buffer compares against.
 
-    - the inline diff in every file of the repository (|diffbuf-inline|),
-    - the changed-files panel (|diffbuf-panel|),
-    - the read-only composite diff buffer (|diffbuf-composite|).
+By default the commit is the merge base of the repository default branch and
+HEAD, which is what a GitHub pull request shows: commits that landed on the
+base branch after your branch forked stay out of the diff. Set `merge_base`
+to false for a plain two-dot `git diff <base>` comparison instead. Pass an
+explicit revision to |:DiffBufOpen| to compare against something else; both
+|:DiffBufOpen| completions cover local branches, remote branches and tags.
 
-Requirements: Neovim 0.13+ and Git. The inline diff additionally needs
-mini.diff (https://github.com/nvim-mini/mini.diff). The panel uses mini.icons
-for file icons when it is installed.
+Requirements: Neovim 0.13+ and Git.
 
 ==============================================================================
-REVIEW MODE                                                  *diffbuf-review*
+COMPOSITE BUFFER                                            *diffbuf-composite*
 
-Start review mode with |:DiffBufReview|. Without an argument it resolves the
-repository default branch from refs/remotes/origin/HEAD, falling back to
-origin/main, main, origin/master and master.
+|:DiffBufOpen| renders every changed file in one read-only buffer, hand-written
+files first and generated ones last (|diffbuf-generated|). Neovim line numbers
+are disabled there; the gutter shows a single working-tree line-number column.
+The diff covers committed branch changes plus staged and unstaged changes.
 
-The repository is the one containing the working directory. When the working
-directory is outside a repository, the file in the current window locates it
-instead.
+Every file is coloured in the language its path implies, on top of the added
+and removed backgrounds. Tree-sitter does it where a parser and its highlights
+query are installed; everything else falls back to Vim's own syntax engine,
+which covers the configuration, shell and markup files a repository holds and
+a review still has to read. Only what a window can see is highlighted, so a
+diff of hundreds of files costs nothing until you scroll into it.
 
-The base revision is then resolved once into a concrete commit, and that commit
-is what every surface compares against. Because a session owns one commit, the
-inline diff, the panel and the composite buffer cannot disagree.
+Each file's body is parsed on its own and still holds the removed lines, so a
+construct that opens outside the shown context can be coloured wrongly;
+block-structured formats such as Markdown suffer from this most. `syntax =
+false` keeps the whole buffer plain.
 
-By default the commit is the merge base of the base revision and HEAD, which is
-what a GitHub pull request shows: commits that landed on the base branch after
-your branch forked stay out of the review. Set `review.merge_base` to false for
-a plain two-dot `git diff <base>` comparison instead.
-
-Pass an explicit revision to review against something else. Both
-|:DiffBufReview| and |:DiffBufOpen| complete local branches, remote branches
-and tags:
->vim
-    :DiffBufReview origin/release-2
-    :DiffBufReview HEAD
+A diff meets file types an editing session never opens, and Neovim names the
+filetype from the path alone here, without the file's contents. Teach it the
+ones your repository uses with `filetypes`, which takes |vim.filetype.add()|
+form:
+>lua
+    require("diffbuf").setup({
+      filetypes = {
+        extension = { axl = "bzl" },
+        filename = { [".bazelrc"] = "conf" },
+        pattern = { [".*%.bazel%.lock"] = "json" },
+      },
+    })
 <
-The review covers committed branch changes plus staged and unstaged changes.
-Untracked files are included as fully added files; set `review.untracked` to
-false to leave them out.
+The rules go to |vim.filetype.add()| itself, so they apply to the real files
+too, not only to their diffs.
 
-|:DiffBufReviewRefresh| re-resolves the base commit and reloads every surface,
-which is what you want after fetching. Writing a file inside the review
-refreshes the changed-file list on its own.
+The buffer folds itself: each file is a fold and each of its hunks a fold
+inside it, so `zc` collapses the hunk under the cursor, a second `zc` its
+whole file, and |zM| and |zR| collapse and expand everything. The gutter marks
+a fold start with `▾` when it is open and `▸` when it is closed, and a closed
+fold reports its hunk header or file name with its line and change counts.
 
-|:DiffBufReviewStop| ends the session: the inline diff is removed, mini.diff is
-handed back to your own configuration, and the panel closes.
-
-==============================================================================
-INLINE DIFF                                                  *diffbuf-inline*
-
-While review mode is active, mini.diff shows every file of the repository
-against the review base. diffbuf.nvim installs its own mini.diff source, so no
-source wiring is needed; files outside the review keep whatever source you
-configured.
-
-|:DiffBufOverlay| toggles the overview (mini.diff's overlay) across every
-reviewed file, and starts review mode when it is off. The overview is where
-removals become visible: deleted reference lines appear as virtual lines and
-changed reference lines appear next to their buffer counterparts, inside the
-real file.
-
-The overview starts off, because its virtual lines move the text you are
-reading; set `review.overlay` to true to have every session start with it on.
-A file whose only change is added lines looks the same either way, so
-|:DiffBufOverlay| reports which state it switched to.
-
-mini.diff's own mappings keep working, including `[h` and `]h` to move between
-hunks. Applying hunks is rejected during review mode, because a review base is
-not the Git index; stop review mode to stage hunks.
-
-diffbuf.nvim restores `vim.g.minidiff_disable` and `MiniDiff.config.source` to
-the values they had before the session, so a configuration that keeps mini.diff
-off by default stays off afterwards.
+The fold options are window-local and given back when the window shows
+another buffer, so a 'foldmethod' or 'foldexpr' of your own is untouched.
+'foldlevel' is yours after the buffer is first shown; leaving and re-entering
+the buffer starts over from the fully expanded state, with generated files
+collapsed again.
 
 ==============================================================================
-CHANGED-FILES PANEL                                           *diffbuf-panel*
+GENERATED FILES                                          *diffbuf-generated*
 
-The panel is a sidebar listing every file that differs from the review base,
-with its status letter and its added and removed line counts:
+Lock files, code generator output and snapshots make a diff long without
+making it interesting. Both forges mark them in `.gitattributes`, GitHub with
+`linguist-generated` and GitLab with `gitlab-generated`:
 >text
-    Review  origin/main…a1b2c3d (merge base)
-    6 files  +5  -2  [tree]
-
-    ▾ lib
-        newname.txt ← lib/renamed.txt        R
-    ▾ src
-      ▾ deep/nested
-          b.txt                              M +1
-        a.txt                                M +3 -1
-        added.txt                            A +1
-        gone.txt                             D -1
-        untracked.txt                        ?
+    *.lock            gitlab-generated=true
+    gen/**/*.go       linguist-generated
+    src/hand.go       linguist-generated=false
 <
-`t` switches between the tree and flat layouts. The tree layout joins chains of
-directories that hold a single changed subdirectory, so a deep path costs one
-row instead of one row per component.
+diffbuf.nvim reads the same attributes with `git check-attr`, so the files
+that arrive collapsed in a merge request arrive collapsed here:
 
-Opening a file uses the neighbouring editor window and moves the cursor to its
-first hunk. Deleted files have no working-tree copy, so they open a read-only
-buffer holding their content in the base revision.
+    - the composite buffer moves them behind every hand-written file and
+      loads their folds closed, labelled `(generated)`,
 
-See |diffbuf-mappings| for the full list of panel keys.
+Moving them last means the buffer opens on a change worth reading, and `]f`
+walks the real work before it reaches the generated tail. Within each group
+the order Git reported is kept, so `generated.sort_last` is the only thing
+that reorders a diff.
+
+|:DiffBufGenerated| expands and collapses the generated folds inside the
+composite buffer; `gh` does the same.
+
+An explicit `=false` or `-linguist-generated` keeps a file out of the set,
+which is how a hand-written file inside a generated directory stays visible.
+Set `generated.attributes` to `{}` to stop asking Git altogether.
 
 ==============================================================================
-COMPOSITE BUFFER                                          *diffbuf-composite*
+COMMANDS                                                  *diffbuf-commands*
 
-|:DiffBufOpen| renders every changed file in one read-only buffer. Neovim line
-numbers are disabled there; the gutter shows a single working-tree line-number
-column. With review mode active the buffer uses the session base, so it agrees
-with the panel and the inline diff.
-
-==============================================================================
-COMMANDS                                                   *diffbuf-commands*
-
-                                                              *:DiffBufReview*
-:DiffBufReview [revision]
-    Start review mode, or switch the active session to another base. Without a
-    revision the repository default branch is used. Completes revisions.
-
-                                                        *:DiffBufReviewToggle*
-:DiffBufReviewToggle [revision]
-    Start review mode when it is off, stop it when it is on.
-
-                                                          *:DiffBufReviewStop*
-:DiffBufReviewStop
-    Stop review mode and release every review surface.
-
-                                                       *:DiffBufReviewRefresh*
-:DiffBufReviewRefresh
-    Re-resolve the base commit and reload the inline diff, the panel and every
-    composite buffer.
-
-                                                               *:DiffBufPanel*
-:DiffBufPanel
-    Toggle the changed-files panel, starting review mode when it is off.
-
-                                                             *:DiffBufOverlay*
-:DiffBufOverlay
-    Toggle the inline diff overview in every reviewed file, starting review
-    mode when it is off.
-
-                                                                *:DiffBufOpen*
+                                                              *:DiffBufOpen*
 :DiffBufOpen [revision]
-    Open the composite diff buffer. Uses the review base when a session is
-    active and no revision is given. Completes revisions.
+    Open the composite diff buffer. Without a revision the repository default
+    branch is used. Completes revisions.
 
                                                              *:DiffBufRefresh*
 :DiffBufRefresh
     Regenerate the current composite buffer.
 
+                                                           *:DiffBufGenerated*
+:DiffBufGenerated
+    Collapse or expand the generated files in the composite buffer. See
+    |diffbuf-generated|.
+
 ==============================================================================
-MAPPINGS                                                   *diffbuf-mappings*
+MAPPINGS                                                  *diffbuf-mappings*
 
 diffbuf.nvim sets no global mappings. Map the commands or the Lua API
 (|diffbuf-api|) yourself.
@@ -183,53 +135,34 @@ Inside a composite buffer:
     <CR>    Open the mapped working-tree source line.
     ]f/[f   Move to the next/previous changed file.
     ]c/[c   Move to the next/previous hunk.
+    gh      Collapse or expand every generated file.
     r       Refresh the diff.
     q       Delete the diff buffer.
     ?       Open this help.
+
+Folds are Neovim's own, so |zc|, |zo|, |za|, |zM| and |zR| all apply; see
+|diffbuf-composite|.
 
 For |gd|, diffbuf.nvim lazily loads the real source buffer and waits briefly
 for its normal LSP client to attach. Added and context lines map to the
 working-tree file. Deleted lines have no working-tree LSP location.
 
-Inside the panel:
-
-    <CR>    Open the file, or expand and collapse the directory.
-    o, l    Same as <CR>.
-    <Tab>   Open the file and keep the cursor in the panel.
-    h       Collapse the directory, or move to the parent directory.
-    H       Collapse every directory.
-    L       Expand every directory.
-    t       Toggle the tree and flat layout.
-    r       Reload the changed-file list.
-    R       Re-resolve the base and reload every review surface.
-    d       Open the composite diff buffer.
-    O       Toggle the inline diff overview.
-    q       Close the panel.
-    ?       Open this help.
-
 ==============================================================================
-CONFIGURATION                                                *diffbuf-config*
+CONFIGURATION                                              *diffbuf-config*
 
 Setup is optional. Defaults:
 >lua
     require("diffbuf").setup({
       context = 3,
       lsp_attach_timeout_ms = 3000,
-      review = {
-        base = nil,
-        merge_base = true,
-        untracked = true,
-        inline = true,
-        overlay = false,
-        panel = true,
-      },
-      panel = {
-        position = "right",
-        width = 0.3,
-        layout = "tree",
-        group_dirs = true,
-        follow = true,
-        icons = true,
+      syntax = true,
+      filetypes = {},
+      base = nil,
+      merge_base = true,
+      generated = {
+        attributes = { "linguist-generated", "gitlab-generated" },
+        collapse = true,
+        sort_last = true,
       },
     })
 <
@@ -240,131 +173,66 @@ context ~
 lsp_attach_timeout_ms ~
     Time to wait for a source buffer's definition provider to attach.
 
-review.base ~
+syntax ~
+    Highlight the composite buffer per file, with Tree-sitter where a parser
+    is installed and Vim's syntax engine everywhere else. See
+    |diffbuf-composite|.
+
+filetypes ~
+    Filetype rules for paths Neovim cannot name, in |vim.filetype.add()| form
+    and handed straight to it. Empty by default.
+
+base ~
     Default base revision. `nil` resolves the repository default branch.
 
-review.merge_base ~
-    Compare against the merge base of the base revision and HEAD, like a GitHub
-    pull request. When false, compare against the tip of the base revision.
+merge_base ~
+    Compare against the merge base of the base revision and HEAD, like a
+    GitHub pull request. When false, compare against the tip of the base
+    revision.
 
-review.untracked ~
-    Treat untracked files as fully added files. When false, the panel omits
-    them and the inline diff declines to attach to them.
+generated.attributes ~
+    .gitattributes attributes that mark a file as generated. An empty list
+    turns the detection off, and no `git check-attr` runs. See
+    |diffbuf-generated|.
 
-review.inline ~
-    Turn on the mini.diff inline diff when a session starts.
+generated.collapse ~
+    Load generated files with their fold closed in the composite buffer.
 
-review.overlay ~
-    Start every session with the overview visible. See |diffbuf-inline|.
-
-review.panel ~
-    Open the changed-files panel when a session starts.
-
-panel.position ~
-    "right" or "left".
-
-panel.width ~
-    A fraction of 'columns' when 1 or less, otherwise a column count.
-
-panel.layout ~
-    "tree" or "flat".
-
-panel.group_dirs ~
-    Join directory chains that hold a single changed subdirectory.
-
-panel.follow ~
-    Move the panel cursor to the file you enter.
-
-panel.icons ~
-    Use mini.icons file icons when it is installed.
+generated.sort_last ~
+    Lay generated files out after every other file in the composite buffer.
+    When false, the buffer keeps the order `git diff` produced.
 
 ==============================================================================
-LUA API                                                         *diffbuf-api*
+LUA API                                                      *diffbuf-api*
 
 >lua
     local diffbuf = require("diffbuf")
 
-    diffbuf.review({ base = "origin/main" })  -- start or switch the base
-    diffbuf.review_toggle()
-    diffbuf.review_stop()
-    diffbuf.review_refresh()
-    diffbuf.panel_toggle()
-    diffbuf.overlay_toggle()
-    diffbuf.open({ base = "HEAD" })           -- composite buffer
+    diffbuf.open({ base = "HEAD" })  -- composite buffer
     diffbuf.refresh()
-
-    diffbuf.session()          -- active session table, or nil
-    diffbuf.status()           -- "origin/main…a1b2c3d", or "" when off
-    diffbuf.minidiff_source()  -- mini.diff source, for manual wiring
-<
-`diffbuf.status()` is meant for statuslines:
->lua
-    require("lualine").setup({
-      sections = { lualine_c = { { function() return require("diffbuf").status() end } } },
-    })
-<
-The `diffbuf.review`, `diffbuf.panel` and `diffbuf.inline` modules expose the
-same behavior with more options; see their LuaCATS annotations.
-
-==============================================================================
-EVENTS                                                       *diffbuf-events*
-
-diffbuf.nvim triggers |User| events with `{ root, ref, commit }` in the
-autocommand `data` field:
-
-    DiffBufReviewStarted        A session started or switched base.
-    DiffBufReviewStopped        A session ended.
-    DiffBufReviewRefreshed      The base commit was re-resolved.
-    DiffBufReviewFilesChanged   The changed-file list was reloaded.
-
->lua
-    vim.api.nvim_create_autocmd("User", {
-      pattern = "DiffBufReviewStarted",
-      callback = function(event)
-        vim.notify("reviewing against " .. event.data.ref)
-      end,
-    })
+    diffbuf.generated_toggle()       -- true once generated folds are collapsed
 <
 ==============================================================================
-HIGHLIGHT GROUPS                                         *diffbuf-highlights*
+HIGHLIGHT GROUPS                                        *diffbuf-highlights*
 
 All groups are defined with `default = true`, so a colorscheme or your config
 can override them.
-
-Composite buffer:
 
     DiffBufFile               File header line. Links to Title.
     DiffBufHunk               Hunk start line. Links to DiffText.
     DiffBufMeta               Metadata line. Links to Comment.
 
-Panel:
-
-    DiffBufPanelHeader        "Review" label. Links to Title.
-    DiffBufPanelBase          Base revision. Links to Special.
-    DiffBufPanelInfo          Summary line. Links to Comment.
-    DiffBufPanelDir           Directory rows. Links to Directory.
-    DiffBufPanelAdded         Added files and counts. Links to Added.
-    DiffBufPanelModified      Modified files. Links to Changed.
-    DiffBufPanelDeleted       Deleted files and counts. Links to Removed.
-    DiffBufPanelRenamed       Renamed and copied files. Links to Special.
-    DiffBufPanelUntracked     Untracked files. Links to Comment.
-    DiffBufPanelCount         Secondary text. Links to NonText.
-
-The inline diff uses mini.diff's own groups; see |MiniDiff-hl-groups|.
-
 ==============================================================================
-LIMITATIONS                                            *diffbuf-limitations*
+LIMITATIONS                                              *diffbuf-limitations*
 
-- The composite buffer highlights diff structure but does not project
-  per-language Tree-sitter captures into itself.
+- The composite buffer highlights each file's diff body as a standalone
+  fragment that still contains the removed lines, so highlighting can be
+  wrong where a construct opens outside the context lines. A file Neovim
+  cannot name a filetype for stays plain until `filetypes` names it, and a
+  file whose diff runs past 5000 lines is left plain rather than parsed.
 - Deleted lines in the composite buffer cannot issue LSP requests.
-- The composite buffer shows tracked changes only, because untracked files are
-  not part of an ordinary `git diff`. The panel and the inline diff do include
-  them.
-- The inline diff cannot show a deleted file, which has no buffer. Open it from
-  the panel to read its base revision instead.
-- Applying or resetting hunks against a review base is rejected; mini.diff's
-  apply and reset need the Git index.
+- The composite buffer shows tracked changes only, because untracked files
+  are not part of an ordinary `git diff`.
 - A source buffer's first LSP request can wait for its configured server to
   attach. diffbuf.nvim does not configure or start language servers itself.
 
