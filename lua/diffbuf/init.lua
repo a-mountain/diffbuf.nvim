@@ -126,6 +126,7 @@ end
 ---@class diffbuf.OpenOpts
 ---@field cwd? string
 ---@field base? string
+---@field rev? string Already-resolved base commit; skips base resolution and uses `base` as its label.
 
 ---Open the composite diff buffer against a base revision.
 ---@param opts? diffbuf.OpenOpts
@@ -135,6 +136,7 @@ function M.open(opts)
   vim.validate("opts", opts, "table")
   vim.validate("opts.cwd", opts.cwd, "string", true)
   vim.validate("opts.base", opts.base, "string", true)
+  vim.validate("opts.rev", opts.rev, "string", true)
 
   local root, root_error = Git.root(opts.cwd or vim.uv.cwd())
   if root == nil then
@@ -143,7 +145,12 @@ function M.open(opts)
   end
 
   local config = Config.get()
-  local base, base_error = Git.resolve_base(root, opts.base or config.base, config.merge_base)
+  local base, base_error
+  if opts.rev ~= nil then
+    base = { ref = opts.base or opts.rev, commit = opts.rev }
+  else
+    base, base_error = Git.resolve_base(root, opts.base or config.base, config.merge_base)
+  end
   if base == nil then
     notify_error(base_error)
     return nil
@@ -168,6 +175,32 @@ function M.refresh(buf)
     return
   end
   load(state)
+end
+
+---Point a composite buffer at another base and reload it in place. The old
+---diff stays on screen until the new one is ready.
+---@param buf integer
+---@param base { ref: string, commit: string }
+function M.retarget(buf, base)
+  local state = State.get(buf)
+  if state == nil then
+    return
+  end
+  if state.base ~= base.ref then
+    pcall(vim.api.nvim_buf_set_name, buf, ("diffbuf://%s@%s#%d"):format(state.root, base.ref, buf))
+  end
+  state.base = base.ref
+  state.rev = base.commit
+  load(state)
+end
+
+---Composite buffers open on a repository.
+---@param root? string every buffer when nil
+---@return integer[]
+function M.buffers(root)
+  return vim.tbl_filter(function(buf)
+    return root == nil or State.get(buf).root == root
+  end, State.list())
 end
 
 ---Show or hide the generated folds of the composite buffer.

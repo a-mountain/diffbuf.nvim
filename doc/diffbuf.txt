@@ -209,9 +209,15 @@ LUA API                                                      *diffbuf-api*
     local diffbuf = require("diffbuf")
 
     diffbuf.open({ base = "HEAD" })  -- composite buffer
+    diffbuf.open({ base = "origin/main", rev = sha })  -- pre-resolved base
     diffbuf.refresh()
+    diffbuf.retarget(buf, { ref = "HEAD~1", commit = sha })  -- reload in place
+    diffbuf.buffers(root)            -- composite buffers of one repository
     diffbuf.generated_toggle()       -- true once generated folds are collapsed
 <
+`rev` and |diffbuf.retarget()| let an external review controller own the
+base: diffbuf.nvim then compares against the given commit as-is, and the
+previous diff stays on screen until the new one is rendered.
 ==============================================================================
 HIGHLIGHT GROUPS                                        *diffbuf-highlights*
 
