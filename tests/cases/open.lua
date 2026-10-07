@@ -7,6 +7,10 @@ local ok, error_message = xpcall(function()
   vim.o.number = true
   vim.o.relativenumber = true
   vim.cmd.cd(fixture.root)
+  vim.fn.mkdir(vim.fs.joinpath(fixture.root, "new dir"), "p")
+  vim.fn.writefile({ "class UntrackedClass {}" }, vim.fs.joinpath(fixture.root, "new dir", "Untracked é.java"))
+  vim.fn.writefile({ "ignored.log" }, vim.fs.joinpath(fixture.root, ".git", "info", "exclude"))
+  vim.fn.writefile({ "ignoredContent" }, vim.fs.joinpath(fixture.root, "ignored.log"))
   vim.cmd("DiffBufOpen")
   helpers.wait_ready()
 
@@ -37,6 +41,9 @@ local ok, error_message = xpcall(function()
   assert(text:find("committedChange", 1, true))
   assert(text:find("stagedChange", 1, true))
   assert(text:find("unstagedChange", 1, true))
+  assert(text:find("new dir/Untracked é.java", 1, true), "untracked files must be listed")
+  assert(text:find("UntrackedClass", 1, true), "untracked file content must be shown")
+  assert(not text:find("ignoredContent", 1, true), "ignored files must stay hidden")
   assert(not text:find("@@", 1, true))
 
   local gd = vim.fn.maparg("gd", "n", false, true)

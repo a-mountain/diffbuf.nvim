@@ -85,7 +85,8 @@ local function load(state)
     UI.render(state.buf, parsed, state.base)
   end
 
-  state.job = Git.diff(state.root, state.rev, Config.get().context, function(result)
+  local diff = Config.get().diff or Git.diff
+  state.job = diff(state.root, state.rev, Config.get().context, function(result)
     if not alive() then
       return
     end

@@ -15,6 +15,10 @@ local defaults = {
   -- Compare against the merge base of the base revision and HEAD, like a
   -- GitHub pull request does.
   merge_base = true,
+  -- Diff source `fun(root, rev, context, callback)` calling back once with
+  -- `{ code, stdout, stderr }` and returning a handle with `:kill()`. `nil`
+  -- runs git itself, untracked files included.
+  diff = nil,
   generated = {
     -- .gitattributes attributes that mark a file as generated. GitHub reads
     -- `linguist-generated`, GitLab reads `gitlab-generated`. An empty list
@@ -51,6 +55,7 @@ local function resolve(user)
   vim.validate("opts.filetypes", user.filetypes, "table", true)
   vim.validate("opts.base", user.base, "string", true)
   vim.validate("opts.merge_base", user.merge_base, "boolean", true)
+  vim.validate("opts.diff", user.diff, "function", true)
   vim.validate("opts.generated", user.generated, "table", true)
 
   local config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), vim.deepcopy(user))

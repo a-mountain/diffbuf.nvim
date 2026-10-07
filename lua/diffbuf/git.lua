@@ -142,22 +142,62 @@ function M.refs(root)
   return refs
 end
 
-function M.diff(root, rev, context, callback)
-  return vim.system({
+local function diff_args(context, ...)
+  return vim.list_extend({
     "git",
     "-c",
     "core.quotepath=false",
     "diff",
     "--no-color",
     "--no-ext-diff",
-    "--find-renames",
     "--unified=" .. context,
-    rev,
-    "--",
-  }, {
-    cwd = root,
-    text = true,
-  }, vim.schedule_wrap(callback))
+  }, { ... })
+end
+
+---Diff the worktree against `rev`, with untracked files appended as new files.
+---Returns a handle whose `kill` stops whichever git process is running.
+function M.diff(root, rev, context, callback)
+  local job = { killed = false }
+  local current
+  function job.kill(_, signal)
+    job.killed = true
+    if current ~= nil then
+      pcall(current.kill, current, signal)
+    end
+  end
+
+  local function spawn(argv, on_exit)
+    current = vim.system(argv, { cwd = root, text = true }, vim.schedule_wrap(function(result)
+      if not job.killed then
+        on_exit(result)
+      end
+    end))
+  end
+
+  local tracked = diff_args(context, "--find-renames", rev, "--")
+  spawn(tracked, function(diff)
+    if diff.code ~= 0 then
+      return callback(diff)
+    end
+    spawn({ "git", "ls-files", "-z", "--others", "--exclude-standard" }, function(listed)
+      local paths = vim.tbl_filter(function(path)
+        return path ~= ""
+      end, vim.split(listed.stdout or "", "\0", { plain = true }))
+      local chunks = { diff.stdout or "" }
+      local function next_path(index)
+        local path = paths[index]
+        if path == nil then
+          return callback({ code = 0, stdout = table.concat(chunks), stderr = "" })
+        end
+        spawn(diff_args(context, "--no-index", "--", "/dev/null", path), function(result)
+          chunks[#chunks + 1] = result.stdout or ""
+          next_path(index + 1)
+        end)
+      end
+      next_path(1)
+    end)
+  end)
+  return job
 end
 
 ---Read one file as it exists in `rev`. A non-zero exit means the path is absent
